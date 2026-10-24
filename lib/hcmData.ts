@@ -67,6 +67,37 @@ export function isWorkingDay(isoDate: string): boolean {
   return !isWeekend(isoDate);
 }
 
+/**
+ * Fixed-date national public holidays (Pakistan, 2026). Lunar holidays (Eid
+ * etc.) are moon-sighted and intentionally not modeled — the demo calendar
+ * only skips these deterministic dates plus weekends.
+ */
+export const PUBLIC_HOLIDAYS: ReadonlySet<string> = new Set([
+  "2026-02-05", // Kashmir Day
+  "2026-03-23", // Pakistan Day
+  "2026-05-01", // Labour Day
+  "2026-08-14", // Independence Day
+  "2026-11-09", // Iqbal Day
+  "2026-12-25", // Quaid-e-Azam Day
+]);
+
+export function isPublicHoliday(isoDate: string): boolean {
+  return PUBLIC_HOLIDAYS.has(isoDate);
+}
+
+/**
+ * Count leave days between two ISO dates (inclusive), SKIPPING weekends and
+ * public holidays. This is the only day-count the ledger ever sees.
+ */
+export function countWorkingDays(start: string, end: string): number {
+  let count = 0;
+  for (let d = start; d <= end; d = addDaysIso(d, 1)) {
+    if (isWorkingDay(d) && !isPublicHoliday(d)) count += 1;
+    if (d === end) break; // guard against malformed ranges
+  }
+  return count;
+}
+
 export function addDaysIso(isoDate: string, days: number): string {
   const d = new Date(`${isoDate}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);

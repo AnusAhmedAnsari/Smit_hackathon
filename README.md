@@ -49,12 +49,20 @@ app/api/ai/dashboard-summary POST  Admin/HR-only insight bullets + number verifi
 app/api/ai/smart-leave       POST  Employee-only NL leave suggestion (ai_suggested: true)
 app/api/ai/logs              GET   Admin-only audit feed
 app/api/dashboard            GET   KPI cards (payroll hidden for Employee)
-app/api/leaves               GET/POST/PATCH  the ONLY write path: human-confirmed
-                             applications + Admin/HR decisions. PATCH enforces
-                             server-side: pending-only decisions (first action
-                             wins, 409 afterwards), balance deduction on approve
-                             (unpaid exempt), decidedBy/decidedAt stored, and
-                             "HR cannot decide their own leave — Admin only".
+app/api/leaves               GET/POST — strict 401 auth; employees see ONLY their
+                             own records; Admin/HR list all (?status= filter);
+                             apply creates ONE pending record with `days` counted
+                             as WORKING days (weekends + public holidays skipped)
+                             and 422 on overlap or over-balance
+app/api/leaves/[id]/decision PATCH — Admin/HR approve/reject, fully server-enforced:
+                             401 no session · 403 employee · 404 unknown · 409
+                             not-pending (first decision wins, no double
+                             deduction) · 403 self-decision (NOBODY decides their
+                             own request, Admin included) · 422 approval-time
+                             re-validation (balance/overlap). Approve deducts the
+                             ledger balance (Unpaid exempt — settled in payroll);
+                             reject changes nothing. decidedBy/decidedAt/
+                             decisionNote stored on the record.
 ```
 
 ### Constitution compliance
@@ -75,11 +83,12 @@ The browser talks **only** to internal `/api/ai/*` endpoints — verified via `p
 With the production server running:
 
 ```bash
-node scripts/verify-at.mjs http://localhost:3000
-node scripts/verify-leave-rules.mjs http://localhost:3000   # leave decision rules (LR-1…LR-9)
+node scripts/test-leave.mjs http://localhost:3000          # full 14-item checklist suite
+node scripts/verify-leave-rules.mjs http://localhost:3000  # quick decision-rules regression
+node scripts/verify-at.mjs http://localhost:3000           # AT-01…AT-11 assistant suite
 ```
 
-Covers AT-01…AT-09, AT-11 (API level), the permission 403s, the human-confirmation write path, the rate limiter, and the full leave-decision rule set. Expected output: `ALL ACCEPTANCE CHECKS PASSED ✅` / `ALL LEAVE-RULE CHECKS PASSED ✅`.
+`test-leave.mjs` covers all 14 checklist items (pending creation, visibility, approve/reject fields + balance math, 409 first-decision-wins, 403 employee/self, 422 over-balance/overlap/approval-revalidation, working-day counting across weekends and public holidays, 401 strict auth). Run each suite against a freshly started server — the ledger is in-memory. Expected: `ALL CHECKLIST CHECKS PASSED ✅`.
 
 ## Key seeded test facts
 

@@ -24,6 +24,17 @@ export function getSession(req: Request): SessionUser | null {
   return USERS[email] ?? null;
 }
 
+/**
+ * STRICT resolution for the leave module: no header or an unknown email means
+ * NO session — the caller must answer 401. No demo fallback, so an
+ * unauthenticated request can never read or change leave records.
+ */
+export function getSessionStrict(req: Request): SessionUser | null {
+  const email = req.headers.get(SESSION_HEADER)?.trim().toLowerCase();
+  if (!email) return null;
+  return USERS[email] ?? null;
+}
+
 export function listDemoSessions(): SessionUser[] {
   return SESSION_EMAILS.map((e) => USERS[e]);
 }

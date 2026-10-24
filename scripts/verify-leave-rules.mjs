@@ -1,17 +1,9 @@
 /**
- * Leave Decision Rules verification (PATCH /api/leaves)
+ * Leave decision rules — quick regression subset (LR-1…LR-9)
  * ---------------------------------------------------------------------------
- * Usage: node scripts/verify-leave-rules.mjs [baseUrl]
- * Expects the production server running. Verifies:
- *   LR-1  Employee cannot decide (403)
- *   LR-2  HR cannot decide their OWN leave (403) — Admin can
- *   LR-3  Admin approves: approved + decidedBy/decidedAt stored + balance deducted
- *   LR-4  First action wins: second decision on the same record → 409
- *   LR-5  Reject: no balance change
- *   LR-6  Unpaid: approving does NOT touch any balance
- *   LR-7  Deduction math: remaining = remaining − approved days
- *   LR-8  Decisions + refusals are visible in the audit trail
- *   LR-9  Employee cannot see the pending queue (visibility rule)
+ * Usage:  node scripts/verify-leave-rules.mjs [baseUrl]
+ * For the FULL checklist suite (items 1–14) see scripts/test-leave.mjs.
+ * Run against a freshly started production server.
  */
 
 const BASE = process.argv[2] ?? "http://localhost:3000";
@@ -37,8 +29,8 @@ async function post(path, body, email) {
   });
   return { status: res.status, body: await res.json() };
 }
-async function patch(body, email) {
-  const res = await fetch(`${BASE}/api/leaves`, {
+async function decide(id, body, email) {
+  const res = await fetch(`${BASE}/api/leaves/${id}/decision`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", "x-user-email": email },
     body: JSON.stringify(body),
@@ -49,7 +41,7 @@ const balanceRow = (bal, type) => bal?.balances?.find((b) => b.type === type)?.r
 
 /* LR-1 — Employee cannot decide */
 {
-  const r = await patch({ id: "LV-004", action: "approve" }, EMP);
+  const r = await decide("LV-004", { action: "approve" }, EMP);
   record(
     "LR-1",
     r.status === 403 && /Only Admin and HR/.test(r.body.error ?? ""),
@@ -57,7 +49,7 @@ const balanceRow = (bal, type) => bal?.balances?.find((b) => b.type === type)?.r
   );
 }
 
-/* LR-2 — HR cannot decide their own leave (submit one as HR first) */
+/* LR-2 — HR cannot decide their OWN leave (submit one as HR first) */
 const hrApp = await post(
   "/api/leaves",
   { type: "casual", start: "2026-12-01", end: "2026-12-01", reason: "HR officer self-test application" },
@@ -65,15 +57,15 @@ const hrApp = await post(
 );
 {
   const hrCasualBefore = balanceRow(hrApp.body.balance, "casual");
-  const self = await patch({ id: hrApp.body.application.id, action: "approve" }, HR);
+  const self = await decide(hrApp.body.application.id, { action: "approve" }, HR);
   record(
     "LR-2",
-    self.status === 403 && /HR cannot approve or reject their own leave/.test(self.body.error ?? ""),
+    self.status === 403 && /own leave request/.test(self.body.error ?? ""),
     `HR self-decision → ${self.status} "${self.body.error}" (casual before: ${hrCasualBefore})`,
   );
 
   /* LR-3 — Admin approves HR's application: status/decidedBy/decidedAt/deduction */
-  const ok = await patch({ id: hrApp.body.application.id, action: "approve" }, ADMIN);
+  const ok = await decide(hrApp.body.application.id, { action: "approve" }, ADMIN);
   const app = ok.body.application;
   const hrCasualAfter = balanceRow(ok.body.balance, "casual");
   const expectedAfter = hrCasualBefore - app.days;
@@ -88,12 +80,12 @@ const hrApp = await post(
   );
 
   /* LR-4 — first action wins: any later decision → 409 */
-  const again = await patch({ id: hrApp.body.application.id, action: "approve" }, ADMIN);
-  const flip = await patch({ id: hrApp.body.application.id, action: "reject" }, ADMIN);
+  const again = await decide(hrApp.body.application.id, { action: "approve" }, ADMIN);
+  const flip = await decide(hrApp.body.application.id, { action: "reject" }, ADMIN);
   record(
     "LR-4",
     again.status === 409 && flip.status === 409 && /already approved/.test(again.body.error ?? ""),
-    `Re-approve → ${again.status}, approve-after? reject → ${flip.status} ("${again.body.error}")`,
+    `Re-approve → ${again.status}, reject-after → ${flip.status} ("${again.body.error}")`,
   );
 }
 
@@ -105,7 +97,7 @@ const hrApp = await post(
     EMP,
   );
   const before = balanceRow(app.body.balance, "casual");
-  const rej = await patch({ id: app.body.application.id, action: "reject" }, ADMIN);
+  const rej = await decide(app.body.application.id, { action: "reject" }, ADMIN);
   const after = balanceRow(rej.body.balance, "casual");
   record(
     "LR-5",
@@ -118,7 +110,7 @@ const hrApp = await post(
   );
 }
 
-/* LR-6 + LR-7 — unpaid exempt from deduction; quota type deducts exactly its days */
+/* LR-6 — unpaid exempt from deduction */
 {
   const unpaid = await post(
     "/api/leaves",
@@ -128,32 +120,32 @@ const hrApp = await post(
   const sickBefore = balanceRow(unpaid.body.balance, "sick");
   const annualBefore = balanceRow(unpaid.body.balance, "annual");
   const casualBefore = balanceRow(unpaid.body.balance, "casual");
-  const okU = await patch({ id: unpaid.body.application.id, action: "approve" }, ADMIN);
-  const sickAfter = balanceRow(okU.body.balance, "sick");
-  const annualAfter = balanceRow(okU.body.balance, "annual");
-  const casualAfter = balanceRow(okU.body.balance, "casual");
+  const okU = await decide(unpaid.body.application.id, { action: "approve" }, ADMIN);
   record(
     "LR-6",
     okU.status === 200 &&
       okU.body.application.status === "approved" &&
-      sickBefore === sickAfter &&
-      annualBefore === annualAfter &&
-      casualBefore === casualAfter &&
-      /unpaid leave, no balance change/.test(okU.body.message ?? ""),
-    `Unpaid approve → ${okU.status}, sick ${sickBefore}→${sickAfter}, annual ${annualBefore}→${annualAfter}, casual ${casualBefore}→${casualAfter} (all unchanged)`,
+      balanceRow(okU.body.balance, "sick") === sickBefore &&
+      balanceRow(okU.body.balance, "annual") === annualBefore &&
+      balanceRow(okU.body.balance, "casual") === casualBefore &&
+      /no balance deduction/.test(okU.body.message ?? ""),
+    `Unpaid approve → ${okU.status}, sick/annual/casual unchanged (${sickBefore}/${annualBefore}/${casualBefore})`,
   );
+}
 
+/* LR-7 — deduction math: remaining −= approved working days */
+{
   const paid = await post(
     "/api/leaves",
-    { type: "casual", start: "2026-12-04", end: "2026-12-05", reason: "Deduction math test" },
+    { type: "casual", start: "2026-12-10", end: "2026-12-11", reason: "Deduction math test" }, // Thu–Fri = 2 working days
     EMP,
   );
   const before = balanceRow(paid.body.balance, "casual");
-  const okP = await patch({ id: paid.body.application.id, action: "approve" }, ADMIN);
+  const okP = await decide(paid.body.application.id, { action: "approve" }, ADMIN);
   const after = balanceRow(okP.body.balance, "casual");
   record(
     "LR-7",
-    okP.status === 200 && after === before - 2 && /2 casual days deducted/.test(okP.body.message ?? ""),
+    okP.status === 200 && after === before - 2 && /2 casual working days deducted/.test(okP.body.message ?? ""),
     `Casual 2d approve → casual ${before}→${after} (expected −2), message "${okP.body.message}"`,
   );
 }
@@ -177,8 +169,8 @@ const hrApp = await post(
   const hrView = await get("/api/leaves", HR);
   record(
     "LR-9",
-    empView.body.pending === undefined && Array.isArray(hrView.body.pending) && hrView.body.pending.length >= 0,
-    `Employee pending queue hidden (${empView.body.pending === undefined ? "✓" : "LEAK"}); HR queue visible with ${hrView.body.pending?.length ?? "?"} row(s)`,
+    empView.body.all === undefined && Array.isArray(hrView.body.all) && hrView.body.all.length >= 0,
+    `Employee officer-list hidden (${empView.body.all === undefined ? "✓" : "LEAK"}); HR list visible with ${hrView.body.all?.length ?? "?"} row(s)`,
   );
 }
 

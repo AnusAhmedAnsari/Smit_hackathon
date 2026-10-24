@@ -65,6 +65,8 @@ export interface LeaveRecord {
   decidedBy?: string;
   /** Server timestamp of the decision (approvedAt on approval). */
   decidedAt?: string;
+  /** Optional note recorded with the decision (shown to the employee on rejection). */
+  decisionNote?: string;
   /** Only present on newly submitted (pending) applications from the Smart Leave flow. */
   aiSuggested?: boolean;
 }
