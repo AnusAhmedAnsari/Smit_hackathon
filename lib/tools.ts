@@ -46,7 +46,7 @@ export const TOOL_ARG_SCHEMAS = {
   get_leave_summary: z.object({
     dept: deptSchema,
     period: periodSchema,
-    type: z.enum(["annual", "sick", "casual"]).optional(),
+    type: z.enum(["annual", "sick", "casual", "unpaid"]).optional(),
   }),
   get_my_leave_balance: z.object({}),
   get_payroll_summary: z.object({ dept: deptSchema, period: periodSchema }),
@@ -129,6 +129,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
         "annual",
         "sick",
         "casual",
+        "unpaid",
       ]),
     }),
   },

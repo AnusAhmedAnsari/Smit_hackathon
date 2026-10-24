@@ -198,8 +198,11 @@ export default function Home() {
             />
             <LeaveRecords
               sessionEmail={sessionEmail}
-              role={session?.role ?? "Admin"}
               refreshKey={refreshKey}
+              onDataChanged={() => {
+                setRefreshKey((k) => k + 1);
+                loadDashboard(sessionEmail);
+              }}
             />
           </div>
         )}

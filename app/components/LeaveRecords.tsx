@@ -2,11 +2,14 @@
 
 /**
  * Leave records — the signed-in user's applications, plus (for Admin/HR) the
- * pending approval queue. Read-only here: approvals happen in the HR portal.
+ * pending approval queue with Approve/Reject actions. Every decision rule is
+ * enforced by the server (PATCH /api/leaves); the buttons only reflect the
+ * server-computed `canDecide` per row.
  */
 
-import { CalendarClock, Inbox } from "lucide-react";
+import { CalendarClock, Check, Inbox, Loader2, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import toast from "react-hot-toast";
 import type { Role } from "@/lib/types";
 
 interface LeaveRow {
@@ -22,6 +25,14 @@ interface LeaveRow {
   reason: string;
   appliedOn: string;
   aiSuggested?: boolean;
+  decidedBy?: string;
+  decidedAt?: string;
+  canDecide?: boolean;
+}
+
+interface Viewer {
+  userId: string;
+  role: Role;
 }
 
 const STATUS_CHIP: Record<LeaveRow["status"], string> = {
@@ -32,16 +43,22 @@ const STATUS_CHIP: Record<LeaveRow["status"], string> = {
 
 export default function LeaveRecords({
   sessionEmail,
-  role,
   refreshKey,
+  onDataChanged,
 }: {
   sessionEmail: string;
-  role: Role;
   refreshKey: number;
+  onDataChanged?: () => void;
 }) {
-  const [data, setData] = useState<{ mine: LeaveRow[]; pending: LeaveRow[] | null } | null>(null);
+  const [data, setData] = useState<{
+    mine: LeaveRow[];
+    pending: LeaveRow[] | null;
+    viewer: Viewer | null;
+  } | null>(null);
   const [fetchedFor, setFetchedFor] = useState<string | null>(null);
-  const cacheKey = `${sessionEmail}#${refreshKey}`;
+  const [nonce, setNonce] = useState(0);
+  const [deciding, setDeciding] = useState<string | null>(null);
+  const cacheKey = `${sessionEmail}#${refreshKey}#${nonce}`;
   const loading = fetchedFor !== cacheKey;
 
   useEffect(() => {
@@ -55,8 +72,12 @@ export default function LeaveRecords({
         if (cancelled) return;
         setData(
           body
-            ? { mine: body.mine ?? [], pending: body.pending ?? null }
-            : { mine: [], pending: null },
+            ? {
+                mine: body.mine ?? [],
+                pending: body.pending ?? null,
+                viewer: body.viewer ?? null,
+              }
+            : { mine: [], pending: null, viewer: null },
         );
       } finally {
         if (!cancelled) setFetchedFor(cacheKey);
@@ -69,6 +90,33 @@ export default function LeaveRecords({
 
   const mine = data?.mine ?? [];
   const pending = data?.pending ?? null;
+  const viewer = data?.viewer ?? null;
+
+  async function decide(id: string, action: "approve" | "reject") {
+    setDeciding(`${id}:${action}`);
+    try {
+      const res = await fetch("/api/leaves", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-user-email": sessionEmail },
+        body: JSON.stringify({ id, action }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        // Server verdicts (403 self-decision, 409 already decided) surface verbatim.
+        toast.error(body.error ?? "Could not record the decision.");
+        setNonce((n) => n + 1); // re-sync in case another officer just decided
+        return;
+      }
+      toast.success(body.message);
+      if (body.warning) toast(body.warning, { icon: "⚠️" });
+      onDataChanged?.();
+      setNonce((n) => n + 1);
+    } catch {
+      toast.error("Network error while recording the decision.");
+    } finally {
+      setDeciding(null);
+    }
+  }
 
   const fmt = (iso: string) =>
     new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", {
@@ -103,7 +151,12 @@ export default function LeaveRecords({
                       </span>
                     )}
                   </p>
-                  <p className="truncate text-[11px] text-slate-500">{lv.reason}</p>
+                  <p className="truncate text-[11px] text-slate-500">
+                    {lv.reason}
+                    {lv.decidedAt &&
+                      lv.decidedBy &&
+                      ` · decided by ${lv.decidedBy} at ${new Date(lv.decidedAt).toLocaleString()}`}
+                  </p>
                 </div>
                 <span
                   className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize ${STATUS_CHIP[lv.status]}`}
@@ -116,12 +169,16 @@ export default function LeaveRecords({
         )}
       </div>
 
-      {role !== "Employee" && (
+      {viewer && viewer.role !== "Employee" && (
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="flex items-center gap-2">
             <Inbox className="h-5 w-5 text-amber-300" />
             <h3 className="text-sm font-semibold text-slate-100">Pending approvals (org-wide)</h3>
           </div>
+          <p className="mt-1 text-[11px] text-slate-500">
+            First decision wins — the server rejects later attempts. HR cannot decide their own
+            leave; only Admin can.
+          </p>
           {loading ? (
             <p className="mt-4 text-sm text-slate-500">Loading…</p>
           ) : !pending || pending.length === 0 ? (
@@ -134,16 +191,54 @@ export default function LeaveRecords({
                     <p className="truncate text-sm text-slate-200">
                       {lv.employeeName} <span className="text-slate-500">({lv.dept})</span> ·{" "}
                       <span className="capitalize">{lv.type}</span> · {lv.days}d
+                      {lv.aiSuggested && (
+                        <span className="ml-2 rounded-full border border-indigo-500/40 bg-indigo-500/10 px-1.5 py-0.5 text-[9px] text-indigo-300">
+                          AI-suggested
+                        </span>
+                      )}
                     </p>
                     <p className="truncate text-[11px] text-slate-500">
                       {fmt(lv.start)} → {fmt(lv.end)} · {lv.reason}
                     </p>
                   </div>
-                  <span
-                    className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${STATUS_CHIP[lv.status]}`}
-                  >
-                    pending
-                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {lv.canDecide ? (
+                      <>
+                        <button
+                          onClick={() => decide(lv.id, "approve")}
+                          disabled={deciding !== null}
+                          className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-40"
+                        >
+                          {deciding === `${lv.id}:approve` ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Check className="h-3 w-3" />
+                          )}
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => decide(lv.id, "reject")}
+                          disabled={deciding !== null}
+                          className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40"
+                        >
+                          {deciding === `${lv.id}:reject` ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <X className="h-3 w-3" />
+                          )}
+                          Reject
+                        </button>
+                      </>
+                    ) : viewer.role === "HR" && lv.employeeId === viewer.userId ? (
+                      <span className="text-[10px] text-slate-500">Own leave — Admin decides</span>
+                    ) : (
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${STATUS_CHIP.pending}`}
+                      >
+                        pending
+                      </span>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>

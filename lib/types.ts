@@ -47,7 +47,7 @@ export interface AttendanceRecord {
   minutesLate?: number;
 }
 
-export type LeaveType = "annual" | "sick" | "casual";
+export type LeaveType = "annual" | "sick" | "casual" | "unpaid";
 
 export type LeaveStatus = "approved" | "pending" | "rejected";
 
@@ -61,7 +61,10 @@ export interface LeaveRecord {
   status: LeaveStatus;
   reason: string;
   appliedOn: string;
+  /** Set by the deciding Admin/HR (approvedBy on approval). */
   decidedBy?: string;
+  /** Server timestamp of the decision (approvedAt on approval). */
+  decidedAt?: string;
   /** Only present on newly submitted (pending) applications from the Smart Leave flow. */
   aiSuggested?: boolean;
 }
@@ -106,7 +109,7 @@ export interface AiLogEntry {
   timestamp: string; // ISO datetime
   user_id: string;
   role: Role;
-  feature: "chat" | "dashboard_summary" | "smart_leave" | "tool";
+  feature: "chat" | "dashboard_summary" | "smart_leave" | "tool" | "leave_admin";
   tool_name: string | null;
   tool_status: ToolStatus | "n/a";
   outcome: string;

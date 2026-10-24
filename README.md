@@ -49,7 +49,12 @@ app/api/ai/dashboard-summary POST  Admin/HR-only insight bullets + number verifi
 app/api/ai/smart-leave       POST  Employee-only NL leave suggestion (ai_suggested: true)
 app/api/ai/logs              GET   Admin-only audit feed
 app/api/dashboard            GET   KPI cards (payroll hidden for Employee)
-app/api/leaves               GET/POST  the ONLY write — human-confirmed applications
+app/api/leaves               GET/POST/PATCH  the ONLY write path: human-confirmed
+                             applications + Admin/HR decisions. PATCH enforces
+                             server-side: pending-only decisions (first action
+                             wins, 409 afterwards), balance deduction on approve
+                             (unpaid exempt), decidedBy/decidedAt stored, and
+                             "HR cannot decide their own leave — Admin only".
 ```
 
 ### Constitution compliance
@@ -71,9 +76,10 @@ With the production server running:
 
 ```bash
 node scripts/verify-at.mjs http://localhost:3000
+node scripts/verify-leave-rules.mjs http://localhost:3000   # leave decision rules (LR-1…LR-9)
 ```
 
-Covers AT-01…AT-09, AT-11 (API level), the permission 403s, the human-confirmation write path, and the rate limiter. Expected output: `ALL ACCEPTANCE CHECKS PASSED ✅`.
+Covers AT-01…AT-09, AT-11 (API level), the permission 403s, the human-confirmation write path, the rate limiter, and the full leave-decision rule set. Expected output: `ALL ACCEPTANCE CHECKS PASSED ✅` / `ALL LEAVE-RULE CHECKS PASSED ✅`.
 
 ## Key seeded test facts
 

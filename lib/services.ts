@@ -387,12 +387,12 @@ export function getLeaveSummaryService(dept?: string, period?: string, type?: st
     };
   }
   const wantedType = type?.trim().toLowerCase();
-  if (wantedType && !["annual", "sick", "casual"].includes(wantedType)) {
+  if (wantedType && !["annual", "sick", "casual", "unpaid"].includes(wantedType)) {
     return {
       status: "ambiguous" as const,
       data: null,
       meta: meta("get_leave_summary"),
-      message: `Unknown leave type "${type}". Valid types: annual, sick, casual.`,
+      message: `Unknown leave type "${type}". Valid types: annual, sick, casual, unpaid.`,
     };
   }
   const scopeIds = new Set(activeEmployees(dept).map((e) => e.id));
@@ -405,7 +405,7 @@ export function getLeaveSummaryService(dept?: string, period?: string, type?: st
   );
   const types: LeaveType[] = wantedType
     ? [wantedType as LeaveType]
-    : ["annual", "sick", "casual"];
+    : ["annual", "sick", "casual", "unpaid"];
   const byType = types.map((t) => {
     const rows = inScope.filter((lv) => lv.type === t);
     return {

@@ -32,6 +32,7 @@ const TYPE_STYLES: Record<string, string> = {
   annual: "border-indigo-500/40 bg-indigo-500/10 text-indigo-300",
   sick: "border-rose-500/40 bg-rose-500/10 text-rose-300",
   casual: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  unpaid: "border-slate-500/40 bg-slate-500/10 text-slate-300",
 };
 
 const fmt = (iso: string) =>
@@ -207,6 +208,7 @@ export default function SmartLeave({
                 <option value="annual">Annual</option>
                 <option value="sick">Sick</option>
                 <option value="casual">Casual</option>
+                <option value="unpaid">Unpaid (no balance)</option>
               </select>
               <input
                 type="date"
