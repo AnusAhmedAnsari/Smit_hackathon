@@ -1,14 +1,20 @@
 /**
  * HCM Lite — AI Gateway (M8, T3.x / T5.x)
  * ---------------------------------------------------------------------------
- * Single entry point for AI generation:
- *   - Gemini 1.5 Flash via @google/generative-ai when GEMINI_API_KEY or
- *     AI_API_KEY is present (15 s request timeout, max 3 tool rounds),
- *   - deterministic safe mock otherwise, or on any Gemini failure.
+ * Single entry point for AI generation. SERVER-SIDE ONLY — the browser talks
+ * exclusively to /api/ai/* and never sees the provider, the key, or raw
+ * provider errors (AT-11).
  *
- * SECURITY: calls to the provider happen ONLY from this server module — the
- * browser talks exclusively to /api/ai/* (AT-11). The API key never reaches
- * the client and is redacted if it ever appears in a log.
+ * Secrets & configuration (server-only, never NEXT_PUBLIC_*, never hardcoded):
+ *   - GEMINI_API_KEY : required for the chat gateway. Missing/empty is NOT a
+ *     crash — /api/ai/chat answers a clean 500 "AI is not configured." and
+ *     logs a server-side warning.
+ *   - GEMINI_MODEL   : optional. Empty falls back to the current stable Flash
+ *     model per the official Google docs (gemini-2.5-flash).
+ *
+ * Failure policy for /api/ai/chat: any provider error/timeout returns a
+ * friendly message to the UI and writes the failure to the AI audit log.
+ * RBAC checks, tool permissions, audit logging and redaction are untouched.
  */
 
 import {
@@ -19,21 +25,28 @@ import {
   type Tool,
 } from "@google/generative-ai";
 import { logAiRequest } from "./aiLogs";
-import { mockAssistantReply } from "./mockAssistant";
 import { buildSystemPrompt } from "./policy";
+import { SALARY_REFUSAL } from "./permissions";
 import { executeTool, TOOL_CATALOG } from "./tools";
 import type { SessionUser } from "./types";
 
-export const GEMINI_MODEL = "gemini-1.5-flash";
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_TOOL_ROUNDS = 3;
+/** Current stable Gemini Flash model per official docs (ai.google.dev). */
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
 export function getApiKey(): string | null {
-  return process.env.GEMINI_API_KEY || process.env.AI_API_KEY || null;
+  const key = process.env.GEMINI_API_KEY;
+  return key && key.trim() ? key.trim() : null;
 }
 
 export function hasGeminiKey(): boolean {
-  return Boolean(getApiKey());
+  return getApiKey() !== null;
+}
+
+/** Env-configured model, or the documented stable default when unset/empty. */
+export function getGeminiModel(): string {
+  return process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
 }
 
 const geminiTools: Tool[] = [
@@ -48,13 +61,21 @@ const geminiTools: Tool[] = [
   },
 ];
 
-export interface ChatTurnResult {
+export interface ChatTurnSuccess {
+  ok: true;
   reply: string;
   toolsUsed: { name: string; status: string }[];
-  engine: "gemini" | "mock";
+  engine: "gemini";
   aiGenerated: true;
-  degraded?: string;
 }
+
+export interface ChatTurnFailure {
+  ok: false;
+  /** Friendly, non-leaking message safe to show in the UI. */
+  error: string;
+}
+
+export type ChatTurnResult = ChatTurnSuccess | ChatTurnFailure;
 
 interface TurnRecord {
   role: "user" | "model";
@@ -76,6 +97,9 @@ function rememberTurns(conversationId: string, turns: TurnRecord[]) {
   conversations.set(conversationId, existing);
 }
 
+const looksLikeSalaryRefusal = (reply: string) =>
+  /i am not authorized to disclose/i.test(reply) || reply.includes(SALARY_REFUSAL.slice(0, 40));
+
 /* ------------------------------------------------------------------------- */
 /* Gemini turn (function-calling loop)                                       */
 /* ------------------------------------------------------------------------- */
@@ -84,11 +108,11 @@ async function geminiChatTurn(
   session: SessionUser,
   conversationId: string,
   message: string,
-): Promise<ChatTurnResult> {
+): Promise<ChatTurnSuccess> {
   const genAI = new GoogleGenerativeAI(getApiKey()!);
   const model = genAI.getGenerativeModel(
     {
-      model: GEMINI_MODEL,
+      model: getGeminiModel(),
       systemInstruction: buildSystemPrompt(session),
       tools: geminiTools,
       generationConfig: { temperature: 0.2, maxOutputTokens: 800 },
@@ -132,7 +156,7 @@ async function geminiChatTurn(
     { role: "user", text: message },
     { role: "model", text: reply },
   ]);
-  return { reply, toolsUsed, engine: "gemini", aiGenerated: true };
+  return { ok: true, reply, toolsUsed, engine: "gemini", aiGenerated: true };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -140,60 +164,48 @@ async function geminiChatTurn(
 /* ------------------------------------------------------------------------- */
 
 /**
- * Run one chat turn. Never throws: any Gemini failure degrades to the mock
- * assistant (fail soft) with a short notice prefixed to the reply.
+ * Run one chat turn through Gemini. Never throws: any provider failure is
+ * audit-logged and returned as a friendly ChatTurnFailure — the key, stack
+ * traces and raw provider errors never reach the browser.
  */
 export async function runChatTurn(
   session: SessionUser,
   conversationId: string,
   message: string,
 ): Promise<ChatTurnResult> {
-  if (!hasGeminiKey()) {
-    const mock = mockAssistantReply(message, session);
-    logAiRequest({
-      userId: session.userId,
-      role: session.role,
-      feature: "chat",
-      toolName: mock.toolsUsed[0]?.name ?? null,
-      toolStatus: mock.refused ? "forbidden" : "n/a",
-      outcome: `mock chat: ${mock.reply.slice(0, 120)}`,
-      latencyMs: 1,
-    });
-    return { ...mock, engine: "mock", aiGenerated: true };
-  }
-
   const t0 = Date.now();
   try {
     const r = await geminiChatTurn(session, conversationId, message);
+    // Permission transparency: a refused tool call OR the canonical salary
+    // refusal is recorded with status "forbidden" so the audit viewer proves
+    // the permission matrix held, regardless of how the model phrased it.
+    const refused =
+      r.toolsUsed.some((t) => t.status === "forbidden") || looksLikeSalaryRefusal(r.reply);
     logAiRequest({
       userId: session.userId,
       role: session.role,
       feature: "chat",
       toolName: r.toolsUsed[0]?.name ?? null,
-      toolStatus: (r.toolsUsed[0]?.status as "ok") ?? "n/a",
-      outcome: `gemini chat: ${r.reply.slice(0, 120)}`,
+      toolStatus: refused ? "forbidden" : (r.toolsUsed[0]?.status as "ok") ?? "n/a",
+      outcome: `${refused ? "refused chat" : "gemini chat"}: ${r.reply.slice(0, 120)}`,
       latencyMs: Date.now() - t0,
     });
     return r;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    const mock = mockAssistantReply(message, session);
     logAiRequest({
       userId: session.userId,
       role: session.role,
       feature: "chat",
       toolName: null,
       toolStatus: "error",
-      outcome: `gemini failed (${reason.slice(0, 80)}); degraded to mock`,
+      outcome: `gemini failed (${reason.slice(0, 120)}) — friendly error returned`,
       latencyMs: Date.now() - t0,
     });
     return {
-      reply: mock.reply,
-      toolsUsed: mock.toolsUsed,
-      engine: "mock",
-      aiGenerated: true,
-      degraded:
-        "The AI service is unreachable right now, so I answered from local rules.",
+      ok: false,
+      error:
+        "I'm having trouble reaching the AI service right now. Please try again in a moment — the dashboard cards keep working meanwhile.",
     };
   }
 }

@@ -10,7 +10,7 @@
  */
 
 import { logAiRequest } from "@/lib/aiLogs";
-import { hasGeminiKey, getApiKey, GEMINI_MODEL } from "@/lib/aiGateway";
+import { hasGeminiKey, getApiKey, getGeminiModel } from "@/lib/aiGateway";
 import { getSession, unauthorized } from "@/lib/session";
 import {
   getAttendanceSummaryService,
@@ -168,7 +168,7 @@ async function geminiBullets(
     const genAI = new GoogleGenerativeAI(getApiKey()!);
     const model = genAI.getGenerativeModel(
       {
-        model: GEMINI_MODEL,
+        model: getGeminiModel(),
         generationConfig: { temperature: 0.3, maxOutputTokens: 500 },
         systemInstruction:
           "You are an HCM analyst. Reply with STRICT JSON only: {\"insights\": [\"...\", ...]}. " +

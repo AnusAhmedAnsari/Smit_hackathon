@@ -14,7 +14,7 @@
  */
 
 import { logAiRequest } from "@/lib/aiLogs";
-import { getApiKey, hasGeminiKey, GEMINI_MODEL } from "@/lib/aiGateway";
+import { getApiKey, getGeminiModel, hasGeminiKey } from "@/lib/aiGateway";
 import {
   parseLeaveRequest,
   withQuotaWarning,
@@ -48,7 +48,7 @@ Request: "${message.replace(/"/g, "'")}"`;
       const genAI = new GoogleGenerativeAI(getApiKey()!);
       const model = genAI.getGenerativeModel(
         {
-          model: GEMINI_MODEL,
+          model: getGeminiModel(),
           generationConfig: {
             temperature: 0,
             maxOutputTokens: 200,

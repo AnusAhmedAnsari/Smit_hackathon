@@ -1,8 +1,8 @@
 # HCM Lite — AI Assistant Module (M8)
 
-Saylani Hackathon · Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Lucide icons · Google Gemini 1.5 Flash.
+Saylani Hackathon · Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Lucide icons · Google Gemini (env-configured model).
 
-A self-contained Human-Capital-Management dashboard with a **governed AI assistant**: 7 role-scoped data tools, polite privacy refusals, human-confirmed writes, a full append-only audit trail, and a deterministic fail-soft engine when the AI provider is unavailable.
+A self-contained Human-Capital-Management dashboard with a **governed AI assistant**: 7 role-scoped data tools, polite privacy refusals, human-confirmed writes, a full append-only audit trail, and clean fail-soft behaviour when the AI provider is unavailable or unconfigured.
 
 ## Quick start
 
@@ -12,12 +12,14 @@ npm run build
 npm start          # production, http://localhost:3000
 ```
 
-Optional — enable real Gemini (otherwise the built-in deterministic engine answers everything, including all acceptance tests):
+### Gemini configuration (server-side only)
 
-```bash
-# .env.local  (server-side only — never shipped to the browser)
-GEMINI_API_KEY=your_key_here        # or AI_API_KEY
-```
+Copy `.env.example` to `.env` (in this app root — the file is git-ignored and must never be committed) and set:
+
+- The API key variable (name and placeholder in `.env.example`) — **required for the chat gateway.** Without it, `/api/ai/chat` answers a clean HTTP 500 `"AI is not configured."` (with a server-side warning and an audit-log row); it never crashes and never leaks details.
+- The model variable (also in `.env.example`) — optional. When empty, the gateway falls back to the current stable Flash model per the official Google docs (`gemini-2.5-flash`).
+
+Failures (timeout, quota, invalid key) return a friendly message to the UI, are written to the AI audit log, and never expose the key, stack traces, or raw provider errors. Dashboard summaries and Smart Leave keep their deterministic local fallbacks. In production (Vercel), set the same variables in the project's environment settings — the same rules apply.
 
 ## Demo sessions
 
@@ -39,9 +41,8 @@ lib/permissions.ts  role × tool matrix (the ONE permission system)
 lib/tools.ts        7-tool registry: zod validation → permission gate → service → audit
 lib/aiLogs.ts       append-only audit log with redaction (salary/CNIC/bank/credentials)
 lib/policy.ts       versioned system prompt (policy vM8-policy-3.2 + live date + role delimiter)
-lib/aiGateway.ts    Gemini 1.5 Flash tool-calling loop (15 s timeout, ≤3 rounds) with
-                    deterministic fallback; provider is called SERVER-SIDE ONLY
-lib/mockAssistant.ts rule-based brain — same tools, same refusals, zero API key needed
+lib/aiGateway.ts    Gemini tool-calling loop (env-configured model, 15 s timeout,
+                    ≤3 rounds, friendly failures + audit logging); SERVER-SIDE ONLY
 lib/leaveParser.ts  server-side NL→leave parser ("next Monday and Tuesday" → ISO dates)
 
 app/api/ai/chat              POST  chat gateway (rate limit 20 req/user/h → HTTP 429)
